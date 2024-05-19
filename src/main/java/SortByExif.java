@@ -2,6 +2,10 @@ import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.FileTime;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -13,7 +17,9 @@ import java.util.regex.Pattern;
 public class SortByExif {
     private final Path targetFolder;
     // Parse string like "Date/Time Original              : 2022:02:12 11:25:42"
-    private static final Pattern PAT_DATE_TIME_ORIG = Pattern.compile("Date/Time Original\\s*:\\s*(\\d{4}):(\\d{2}):(\\d{2})");
+    private static final Pattern PAT_DATE_TIME_ORIG = Pattern.compile("Date/Time Original\\s*:\\s*(\\d{4}):(\\d{2}):(\\d{2}) (\\d{2}):(\\d{2}):(\\d{2})");
+    // parse string line "Offset Time                     : +03:00"
+    private static final Pattern PAT_OFFSET_TIME = Pattern.compile("Offset Time\\s*:\\s*([+-]\\d{2}):(\\d{2})");
 
     public SortByExif(Path targetFolder) {
         this.targetFolder = targetFolder;
@@ -68,8 +74,8 @@ public class SortByExif {
             System.err.println(output);
             return exitCode;
         }
-
-        final Matcher matcher = PAT_DATE_TIME_ORIG.matcher(output.toString());
+        final String outputContent = output.toString();
+        final Matcher matcher = PAT_DATE_TIME_ORIG.matcher(outputContent);
         if (matcher.find()) {
             final String year = matcher.group(1);
             final Path targetFolder = this.targetFolder.resolve(year);
@@ -77,6 +83,17 @@ public class SortByExif {
             final Path targetPath = targetFolder.resolve(filePath.getFileName());
             Files.move(filePath, targetPath);
             System.out.println("Moved file to: " + targetPath);
+            final LocalDateTime dateTime = LocalDateTime.of(
+                    Integer.parseInt(matcher.group(1)),
+                    Integer.parseInt(matcher.group(2)),
+                    Integer.parseInt(matcher.group(3)),
+                    Integer.parseInt(matcher.group(4)),
+                    Integer.parseInt(matcher.group(5)),
+                    Integer.parseInt(matcher.group(6))
+            );
+            final FileTime creationDate = FileTime.fromMillis(dateTime.toEpochSecond(getOffsetByMeta(outputContent)) * 1000);
+            final BasicFileAttributeView attributes = Files.getFileAttributeView(targetPath, BasicFileAttributeView.class);
+            attributes.setTimes(creationDate, creationDate, creationDate);
         } else {
             System.out.println("Skip file: " + filePath);
         }
@@ -94,5 +111,15 @@ public class SortByExif {
         }
 
         return process.waitFor();
+    }
+
+    private ZoneOffset getOffsetByMeta(final String exifOutput) {
+        final Matcher matcher = PAT_OFFSET_TIME.matcher(exifOutput);
+        if (matcher.find()) {
+            final int hours = Integer.parseInt(matcher.group(1));
+            final int minutes = Integer.parseInt(matcher.group(2));
+            return ZoneOffset.ofHoursMinutes(hours, minutes);
+        }
+        return ZoneOffset.ofHoursMinutes(2, 0);
     }
 }
